@@ -1,0 +1,6 @@
+port=9091
+output="/tmp/kyt.log"
+dsn="root:1qaz2wsx@tcp(aliyun.eagle711.win:7021)/kyt_BTC"
+
+cor=true
+loglevel="debug"
