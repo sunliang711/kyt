@@ -2,12 +2,15 @@ package handlers
 
 import (
 	"fmt"
-	"github.com/gorilla/mux"
-	"github.com/rs/cors"
-	"github.com/sunliang711/kyt/utils"
-	"github.com/sunliang711/kyt/models"
 	"log"
 	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+	"github.com/rs/cors"
+
+	"github.com/sunliang711/kyt/models"
+	"github.com/sunliang711/kyt/utils"
 )
 
 type HandlerObj struct {
@@ -24,10 +27,12 @@ var allHandlers = []*HandlerObj{
 	&HandlerObj{addressSourceType, "/address_sourcetype", []string{"GET"}, ""},
 	&HandlerObj{addressRiskLevel, "/address_risklevel", []string{"GET"}, ""},
 	&HandlerObj{addressBadTxList, "/address_badtxlist", []string{"GET"}, ""},
+	&HandlerObj{addressBadTxGraph, "/address_badtx_graph", []string{"GET"}, ""},
 	&HandlerObj{blockTxList, "/block_txlist", []string{"GET"}, ""},
 	&HandlerObj{transactionIdentity, "/transaction_identity", []string{"GET"}, ""},
 	&HandlerObj{transactionTxList, "/transaction_txlist", []string{"GET"}, ""},
 	&HandlerObj{transactionGraph, "/transaction_graph", []string{"GET"}, ""},
+	&HandlerObj{blockTransactionGraph, "/block_transaction_graph", []string{"GET"}, ""},
 }
 
 func Router(enableCors bool) http.Handler {
@@ -67,6 +72,7 @@ func searchType(w http.ResponseWriter, req *http.Request) {
 
 		rows, err := models.DB.Query("select address from addresses where address = ? ", queryValue)
 		if err != nil {
+			fmt.Println("query from addresses by address error")
 			utils.JsonResponse(resp{1, "internel db error", nil}, w)
 			return
 		}
@@ -78,43 +84,49 @@ func searchType(w http.ResponseWriter, req *http.Request) {
 			utils.JsonResponse(resp{0, "OK", utils.TypeAddress}, w)
 			return
 		} else {
-			rows, err = models.DB.Query("select * from blockinfo where blockID = ? ", queryValue)
-			if err != nil {
-				utils.JsonResponse(resp{1, "internel db error", nil}, w)
-				return
-			}
-			if rows.Next() {
-				log.Println("exist in blockinfo table")
-				utils.JsonResponse(resp{0, "OK", utils.TypeBlockID}, w)
-				return
-			} else {
-				rows, err = models.DB.Query("select * from blockinfo where blockhash = ?", queryValue)
+			queryValueInt, err := strconv.Atoi(queryValue)
+			if err == nil {
+				fmt.Printf("queryValueInt: %d\n", queryValueInt)
+				rows, err = models.DB.Query("select * from blockinfo where blockID = ? ", queryValueInt)
 				if err != nil {
+					fmt.Printf("query from blockinfo by blockID error")
 					utils.JsonResponse(resp{1, "internel db error", nil}, w)
 					return
 				}
 				if rows.Next() {
 					log.Println("exist in blockinfo table")
-					utils.JsonResponse(resp{0, "OK", utils.TypeBlockHash}, w)
+					utils.JsonResponse(resp{0, "OK", utils.TypeBlockID}, w)
+					return
+				}
+			}
+			rows, err = models.DB.Query("select * from blockinfo where blockhash = ?", queryValue)
+			if err != nil {
+				fmt.Printf("query from blockinfo by blockhash error")
+				utils.JsonResponse(resp{1, "internel db error", nil}, w)
+				return
+			}
+			if rows.Next() {
+				log.Println("exist in blockinfo table")
+				utils.JsonResponse(resp{0, "OK", utils.TypeBlockHash}, w)
+				return
+			} else {
+				rows, err = models.DB.Query("select * from txhash where txhash = ? ", queryValue)
+				if err != nil {
+					fmt.Printf("query from txhash by hash error")
+					utils.JsonResponse(resp{1, "internel db error", nil}, w)
+					return
+				}
+				if rows.Next() {
+					log.Println("exist in txhash table")
+					utils.JsonResponse(resp{0, "OK", utils.TypeTx}, w)
 					return
 				} else {
-					rows, err = models.DB.Query("select * from txhash where hash = ? ", queryValue)
-					if err != nil {
-						utils.JsonResponse(resp{1, "internel db error", nil}, w)
-						return
-					}
-					if rows.Next() {
-						log.Println("exist in txhash table")
-						utils.JsonResponse(resp{0, "OK", utils.TypeTx}, w)
-						return
-					} else {
-						log.Println("exist in other")
-						utils.JsonResponse(resp{0, "OK", utils.TypeOther}, w)
-						return
-					}
+					log.Println("exist in other")
+					utils.JsonResponse(resp{0, "OK", utils.TypeOther}, w)
+					return
 				}
-
 			}
+
 		}
 
 	default:

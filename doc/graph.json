@@ -1,6 +1,6 @@
 {
   "nodes": [
-    {"id":"4062045","user":"mbostock","description":"Force-Directed Graph"},
+    {"id:addrID":"4062045","user:userID":"mbostock","description:addrHash":"Force-Directed Graph"},
     {"id":"1341021","user":"mbostock","description":"Parallel Coordinates"},
     {"id":"1341281","user":"jasondavies","description":"Parallel Coordinates"},
     {"id":"b3ff6ae1c120eea654b5","user":"d3noob","description":"Simple d3.js Graph"},

@@ -1,0 +1,70 @@
+﻿
+目前数据准备了区块高度575013-576459之间的交易记录，做demo示例的时候取这段时间内发生的交易。
+
+address页面-身份标识，已经标注了这段期间暴露的矿工地址、币安交易所地址、黑客地址、参与混币地址，共四种身份。
+地址风险类型分为：Black， Very High, High, Suspicious, Low 五种，目前未标识risktag的默认为Low
+
+
+#####################################################################
+
+binance event DEMO参考：
+
+block height: 575013
+
+第一笔被盗交易 txhash: e8b406091959700dbffcff30a60b190133721e5c39e89bb5fe23c5a554ab05ea
+
+Binance: 
+1NDyJtNTjmwk5xPNhjgAMu4HDHigtobu1s   addrID = 1035
+
+Hacker:
+bc1qtpdptcf4ngfkwq6dr36kqaeh2n5h00rx5unkgc	addrID=1378087
+3PFgaikRuFXTKNNC42b3hyXxdKg7HRHA41		addrID=1378083
+bc1qhlhx6lrnr0jf4zpvm788j7yeezau6s8q557p2z	addrID=1378080
+
+通过mysql查询risktag="Black"可以获得黑客地址和接收大额洗钱的混币地址
+
+
+Mixer:
+3NHB7u25szhW9vz3ikeBbDN8RGE5LC3VSR	addrID = 13316		"Black"
+1CyXUaYXTbWtYePyBA679fRrPxyBarw1rH	addrID = 22		"Very High"
+138hQapNmwkRHtC6DTb7H4tQbjMmj49ej2	addrID = 2		"High"
+
+suspicious
+1MJKCs3qRmbm5WLubgzd9u5JmZTE7YeTSu	addrID = 23		"Suspicious"
+
+
+双重身份例子：
+1ACAgPuFFidYzPMXbiKptSrwT74Dg8hq2v     114290  [['Miner', 'Unknown'], ['Mixer', 'Binance Hack Event May 2019']]  Very High
+
+#####################################################################
+
+
+雷达图更新后的维度：
+1. Active Lifespan: 一个地址首末交易时间差  以适当的时间格式显示
+2. Entity Size：一个地址所属entity所包含的地址总数，若该地址不属于某个entity，则结果返回1
+3. Maximum Balance：一个地址曾经出现过的最大账户余额      单位：BTC
+4. Transaction Volume：一个地址平均每周交易量  	单位:BTC/Week
+5. Transaction Frequency： 一个地址平均每周交易笔数		单位：tx/Week
+6. Variance of tx value: 一个地址交易额分布（输出即为负值）的方差
+7. Total input:  一个地址总接收金额  单位：BTC
+8. Total output: 一个地址总发送金额  单位：BTC
+
+雷达图的样本数据在102： /alidata1/admin/btc_analysis/event/sample_radar.txt
+
+
+######################################################################
+
+address页面 如果地址参与某风险事件，则需返回它参与的具有非空risktag的交易哈希列表
+同时，在画交易拓扑图的时候，若地址是被盗方币安，则画出该事件中由该地址出发的所有与Black地址有关的交易（4318个Black地址）
+若搜索地址是黑客或混币商，则返回该地址向前追溯到的黑钱来源路径。eventrecord表里，addrID是prev_txID的接收方地址，txID的发送方地址，根据txout和txhash两表找到搜索地址对应参与事件的txID，在eventrecord表里，根据txID追溯前一步交易的prev_txID及发送地址addrID、金额value, 依次往前追溯，直到prev_txID为空。
+画图时，node为地址，line为地址之间的交易关联，若一笔交易内有3个发送地址，2个接收地址，那么有5个node，3*2=6条line
+
+block页面，node为address，line为交易，node的颜色代表entity
+
+transaction页面，若搜索的tx不属于某次事件，则只返回该笔交易前后追溯3层的交易，用图画出来
+若搜索的tx属于某次事件，则返回该事件所有Black地址的回溯路径图，及该笔交易的回溯路径图。值回溯黑钱来源，其它输入不回溯，不然数据量非常大。
+
+
+
+
+
