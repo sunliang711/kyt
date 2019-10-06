@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/sunliang711/kyt/models"
@@ -74,6 +75,7 @@ func addressIdentity(w http.ResponseWriter, req *http.Request) {
 	var identities []Identity
 	if len(idtag) == 0 {
 		idtag = "Unknown"
+		identities = append(identities, Identity{idtag, ""})
 	} else {
 		var ids [][]string
 		idtag = strings.ReplaceAll(idtag, "'", "\"")
@@ -158,7 +160,7 @@ func addressRadar(w http.ResponseWriter, req *http.Request) {
 		rows.Scan(&txID, &value)
 		inputTxIDs = append(inputTxIDs, txID)
 		IDWithValues = append(IDWithValues, &IDWithValue{txID, -value})
-		logrus.Debugf("id with value: %v %v", txID, -value)
+		// logrus.Debugf("id with value: %v %v", txID, -value)
 	}
 
 	//根据address到txout里拿所有该address对应的txID收到的value
@@ -174,13 +176,13 @@ func addressRadar(w http.ResponseWriter, req *http.Request) {
 		rows.Scan(&txID, &value)
 		outputTxIDs = append(outputTxIDs, txID)
 		IDWithValues = append(IDWithValues, &IDWithValue{txID, value})
-		logrus.Debugf("id with value: %v %v", txID, value)
+		// logrus.Debugf("id with value: %v %v", txID, value)
 	}
 
 	sort.Sort(IDWithValues)
-	for _, v := range IDWithValues {
-		logrus.Debugf("after sort,id with valud: %v", *v)
-	}
+	// for _, v := range IDWithValues {
+	// 	logrus.Debugf("after sort,id with valud: %v", *v)
+	// }
 
 	resultSlice := make([]int64, len(IDWithValues))
 	for i := range resultSlice {
@@ -190,7 +192,7 @@ func addressRadar(w http.ResponseWriter, req *http.Request) {
 			resultSlice[i] = resultSlice[i-1] + IDWithValues[i].Value
 		}
 	}
-	log.Printf("resultSlice: %v\n", resultSlice)
+	// log.Printf("resultSlice: %v\n", resultSlice)
 	var balanceMax int64
 	balanceMax = resultSlice[len(resultSlice)-1]
 	// for _, v := range resultSlice {
@@ -394,11 +396,11 @@ func addressRadar(w http.ResponseWriter, req *http.Request) {
 		txVolume,
 		period,
 		txFreq,
-		percentBalanceMax,
-		percentCommuntyeSize,
-		percentTxVolume,
-		percentPeriod,
-		percentTxFreq,
+		1 - percentBalanceMax,
+		1 - percentCommuntyeSize,
+		1 - percentTxVolume,
+		1 - percentPeriod,
+		1 - percentTxFreq,
 	}
 	utils.JsonResponse(resp{0, "OK", response}, w)
 }
@@ -465,7 +467,7 @@ func addressSourceType(w http.ResponseWriter, req *http.Request) {
 	for rows2.Next() {
 		var risktag string
 		rows2.Scan(&value, &risktag, &txID)
-		log.Printf("risktag:%v,value:%v,txID: %v", risktag, value, txID)
+		// log.Printf("risktag:%v,value:%v,txID: %v", risktag, value, txID)
 		total += value
 		sourceMap[risktag] += float64(value)
 	}
@@ -597,5 +599,212 @@ func addressBadTxList(w http.ResponseWriter, req *http.Request) {
 }
 
 //根据给定的地址，找到所有该地址参与的交易，然后把这些交易中标记为Black和xx的所有交易找出来，把所有交易的srcs和dests找出来
+//txID 448389
+// 如果是448389，则只向后找，条件是>=400
+// 如果不是448389，则向前找直到找到448389，并且向后找，条件是>=400
 func addressBadTxGraph(w http.ResponseWriter, req *http.Request) {
+	fmt.Println("Enter addressBadTxGraph")
+	query := req.URL.Query()
+	address := query.Get("address")
+	if address == "" {
+		msg := fmt.Sprintf("Query parameter: address is empty")
+		log.Printf(msg)
+		utils.JsonResponse(resp{1, msg, nil}, w)
+		return
+	}
+
+	sql := "select addrID from addresses where address = ?"
+	rows, err := models.DB.Query(sql, address)
+	if err != nil {
+		utils.JsonResponse(resp{1, "Query addrID error", nil}, w)
+		return
+	}
+	var addrID int
+	if rows.Next() {
+		rows.Scan(&addrID)
+	}
+	fmt.Printf("address: %v,addrID: %v\n", address, addrID)
+
+	//找出一个给定的地址参与的所有币安事件的交易的下一层交易
+	// sql = "SELECT DISTINCT d.txID, d.addrID FROM eventrecord d JOIN (SELECT DISTINCT a.txID FROM txhash a JOIN txin b ON (a.txID=b.txID) WHERE b.addrID=? AND a.eventtag='Binance Hack Event May 2019') c ON (c.txID=d.prev_txID) WHERE d.value>=40000000000;"
+	sql = "SELECT DISTINCT a.txID FROM txhash a JOIN txin b ON (a.txID=b.txID) WHERE b.addrID=? AND a.eventtag='Binance Hack Event May 2019';"
+	rows, err = models.DB.Query(sql, addrID)
+	if err != nil {
+		utils.JsonResponse(resp{1, "Query first level tx error", nil}, w)
+		return
+	}
+	txChan := make(chan int, 4096)
+	var txIDs []int
+	txChanDone := make(chan struct{})
+	go func() {
+		for v := range txChan {
+			txIDs = append(txIDs, v)
+		}
+		close(txChanDone)
+	}()
+	var txID int
+	for rows.Next() {
+		rows.Scan(&txID)
+		fmt.Printf("find txID: %v,addrID: %v\n", txID, addrID)
+		txChan <- txID
+	}
+	findNextTxsEvent(addrID, txChan)
+	findPrevTxsEvent(addrID, txChan)
+
+	close(txChan)
+	<-txChanDone
+
+	// sql := "select a.txID from txhash a join txout b on (a.txID=b.txID) where b.addrID=(select addrID from addresses where address=?) and a.risktag is not null;"
+	// rows, err := models.DB.Query(sql, address)
+	// if err != nil {
+	// 	msg := fmt.Sprintf("Execute sql: %v error: %v", sql, err)
+	// 	log.Printf(msg)
+	// 	utils.JsonResponse(resp{1, msg, nil}, w)
+	// 	return
+	// }
+	// var (
+	// 	txID  int
+	// 	txIDs []int
+	// )
+	// for rows.Next() {
+	// 	rows.Scan(&txID)
+	// 	txIDs = append(txIDs, txID)
+	// }
+
+	// sql = "select a.txID from txhash a join txin b on (a.txID=b.txID) where b.addrID=(select addrID from addresses where address=?) and a.risktag is not null;"
+	// rows, err = models.DB.Query(sql, address)
+	// if err != nil {
+	// 	msg := fmt.Sprintf("Execute sql: %v error: %v", sql, err)
+	// 	log.Printf(msg)
+	// 	utils.JsonResponse(resp{1, msg, nil}, w)
+	// 	return
+	// }
+	// for rows.Next() {
+	// 	rows.Scan(&txID)
+	// 	txIDs = append(txIDs, txID)
+	// }
+
+	// var (
+	// 	allNodes []addressNode
+	// 	allLinks []addressLink
+	// )
+	ret, err := TxsGraph(txIDs, true)
+	if err != nil {
+		utils.JsonResponse(resp{1, "error", err}, w)
+		return
+	}
+	utils.JsonResponse(resp{0, "OK", ret}, w)
+
+	// for _, id := range txIDs {
+	// 	nodes, links, err := oneTxGraph(id)
+	// 	if err != nil {
+	// 		msg := fmt.Sprintf("oneTxGraph error: %v", err)
+	// 		log.Printf(msg)
+	// 		utils.JsonResponse(resp{1, msg, nil}, w)
+	// 		return
+	// 	}
+	// 	allNodes = append(allNodes, nodes...)
+	// 	allLinks = append(allLinks, links...)
+	// }
+
+	// ret := struct {
+	// 	Nodes []addressNode `json:"nodes"`
+	// 	Links []addressLink `json:"links"`
+	// }{
+	// 	allNodes,
+	// 	allLinks,
+	// }
+	// utils.JsonResponse(resp{0, "OK", ret}, w)
+}
+
+// findNextTxsEvent TODO
+// 2019/09/29 15:01:17
+func findNextTxsEvent(addrID int, txChan chan int) error {
+	fmt.Printf("findNextTxsEvent(addrID: %v)\n", addrID)
+	sql := "SELECT DISTINCT d.txID, d.addrID FROM eventrecord d JOIN (SELECT DISTINCT a.txID FROM txhash a JOIN txin b ON (a.txID=b.txID) WHERE b.addrID=? AND a.eventtag='Binance Hack Event May 2019') c ON (c.txID=d.prev_txID) WHERE d.value>=40000000000;"
+	rows, err := models.DB.Query(sql, addrID)
+	if err != nil {
+		return err
+	}
+	var (
+		txID int
+		aID  int
+
+		txIDs []int
+		aIDs  []int
+	)
+	for rows.Next() {
+		rows.Scan(&txID, &aID)
+		txIDs = append(txIDs, txID)
+		aIDs = append(aIDs, aID)
+	}
+	fmt.Printf("FindNext  txIDs: %v\n", txIDs)
+	for _, v := range txIDs {
+		txChan <- v
+	}
+	fmt.Printf("FindNext  aIDs: %v\n", aIDs)
+	for _, v := range aIDs {
+		fmt.Printf("addrID for find next: %v\n", v)
+		err = findNextTxsEvent(v, txChan)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// findPrevTxsEvent TODO
+// 2019/09/29 15:17:45
+func findPrevTxsEvent(addrID int, txChan chan int) error {
+	fmt.Printf("findPrevTxsEvent(addrID: %v)\n", addrID)
+	sql := "SELECT DISTINCT d.prev_txID FROM eventrecord d JOIN (SELECT DISTINCT a.txID FROM txhash a JOIN txin b ON (a.txID=b.txID) WHERE b.addrID=? AND a.eventtag='Binance Hack Event May 2019') c ON (c.txID=d.txID) ;"
+	rows, err := models.DB.Query(sql, addrID)
+	if err != nil {
+		return err
+	}
+
+	var (
+		txID  int
+		txIDs []int
+	)
+
+	for rows.Next() {
+		rows.Scan(&txID)
+		txIDs = append(txIDs, txID)
+	}
+
+	fmt.Printf("FindPrev txIDs: %v\n", txIDs)
+	time.Sleep(time.Second * 3)
+	for _, v := range txIDs {
+		fmt.Printf("findPrevLinks:::::%v\n", v)
+		fmt.Printf("txID:%v send to txChan\n", v)
+		txChan <- v
+		// findPrevLinks(v, txChan)
+	}
+
+	return nil
+}
+
+// findPrevs TODO
+// 2019/09/29 16:33:44
+func findPrevLinks(txID int, txChan chan int) error {
+	sql := "select distinct prev_txID FROM eventrecord where txID = txID;"
+	rows, err := models.DB.Query(sql, txID)
+	if err != nil {
+		return err
+	}
+	var (
+		preID int
+	)
+	if rows.Next() {
+		rows.Scan(&preID)
+		fmt.Printf("Got pre: %v\n", preID)
+		txChan <- preID
+		err := findPrevLinks(preID, txChan)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

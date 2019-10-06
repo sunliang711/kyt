@@ -193,7 +193,7 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 			return
 		} else {
 			log.Printf("eventtag is empty")
-			idChan := make(chan int, 1000)
+			idChan := make(chan int, 4096)
 			var ids []interface{}
 			go func() {
 				for id := range idChan {
@@ -212,6 +212,10 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 			}
 			close(idChan)
 			log.Printf("ids: %v", ids)
+			if len(ids) == 0 {
+				utils.JsonResponse(resp{1, fmt.Sprintf("no data  with txhash: %v", txhash), nil}, w)
+				return
+			}
 			sql = "select txhash,eventtag from txhash where txID in " + utils.MakeQuestion(len(ids))
 			rows, err = models.DB.Query(sql, ids...)
 			var hashtags []*hashTag
@@ -324,10 +328,33 @@ func findNexts(txID int, idChan chan int, max uint) error {
 
 	return nil
 }
-
-func transactionGraph(w http.ResponseWriter, req *http.Request) {
+func transactionTag(w http.ResponseWriter, req *http.Request) {
 	query := req.URL.Query()
 	var ()
+	txhash := query.Get("txhash")
+	if len(txhash) == 0 {
+		utils.JsonResponse(resp{1, "need parameter: txhash", nil}, w)
+		return
+	}
+
+	sql := "select risktag from txhash where txhash = ?"
+	rows, err := models.DB.Query(sql, txhash)
+	if err != nil {
+		utils.JsonResponse(resp{1, "internal db error", nil}, w)
+		log.Printf("SQL error: %v", sql)
+		return
+	}
+	defer rows.Close()
+	var tag string
+	if rows.Next() {
+		rows.Scan(&tag)
+	}
+	utils.JsonResponse(resp{0, "OK", tag}, w)
+}
+
+func transactionGraph(w http.ResponseWriter, req *http.Request) {
+	log.Printf("Enter transactionGraph")
+	query := req.URL.Query()
 	txhash := query.Get("txhash")
 	if len(txhash) == 0 {
 		utils.JsonResponse(resp{1, "need parameter: txhash", nil}, w)
@@ -349,26 +376,37 @@ func transactionGraph(w http.ResponseWriter, req *http.Request) {
 		rows.Scan(&txID, &eventtag)
 		rows.Close()
 	}
-	log.Printf("txID: %v ,eventTag: %v", txID, eventtag)
-	idChan := make(chan *idGroup)
-	linkChan := make(chan *link)
+	log.Printf("txID: %v ,eventTag: %v\n", txID, eventtag)
+	idChan := make(chan *idGroup, 1024)
+	linkChan := make(chan *link, 1024)
 	var (
 		idGroups []*idGroup
 		links    []*link
 	)
+	idChanDone := make(chan struct{})
+	linkChanDone := make(chan struct{})
+
+	uniqueID := make(map[string]bool)
 	go func() {
 		for id := range idChan {
-			idGroups = append(idGroups, id)
+			_, exist := uniqueID[id.ID]
+			if !exist {
+				uniqueID[id.ID] = true
+				idGroups = append(idGroups, id)
+			}
 		}
+		close(idChanDone)
 	}()
 	go func() {
 		for l := range linkChan {
 			links = append(links, l)
 		}
+		close(linkChanDone)
 	}()
 	if eventtag == "" {
 		//前后追溯3层
-		err = findPrevs2(txID, idChan, linkChan, 3)
+		first := true
+		err = findPrevs2(txID, idChan, linkChan, 3, first)
 		if err != nil {
 			utils.JsonResponse(resp{1, "find prevs error", nil}, w)
 			return
@@ -382,20 +420,23 @@ func transactionGraph(w http.ResponseWriter, req *http.Request) {
 	} else {
 		//返回该事件所有
 		//使用eventtag查询回溯路径图
-		err = findPrevs3(txID, idChan, linkChan, eventtag)
+		first := true
+		err = findPrevs3(txID, idChan, linkChan, eventtag, first)
 		if err != nil {
 			utils.JsonResponse(resp{1, "find preves with tag error", nil}, w)
 			return
 		}
-		// err = findNexts3(txID, idChan, linkChan, eventtag)
-		// if err != nil {
-		// 	utils.JsonResponse(resp{1, "find nexts error", nil}, w)
-		// 	return
-		// }
+		err = findNexts3(txID, idChan, linkChan, eventtag)
+		if err != nil {
+			utils.JsonResponse(resp{1, "find nexts error", nil}, w)
+			return
+		}
 	}
 	close(idChan)
 	close(linkChan)
 
+	<-idChanDone
+	<-linkChanDone
 	res := struct {
 		Nodes []*idGroup `json:"nodes"`
 		Links []*link    `json:"links"`
@@ -435,11 +476,37 @@ type link struct {
 	Value  int    `json:"value"`
 }
 
-func findPrevs2(txID int, idChan chan *idGroup, linkChan chan *link, max uint) error {
+func txID2Hash(txID int) string {
+	sql := "select txhash from txhash where txID = ?"
+	rows, err := models.DB.Query(sql, txID)
+	if err != nil {
+		return "sql execute error"
+	}
+	defer rows.Close()
+	var hash string
+	if rows.Next() {
+		rows.Scan(&hash)
+	}
+	log.Printf("txID2Hash: %v->%v", txID, hash)
+	return hash
+}
+func findPrevs2(txID int, idChan chan *idGroup, linkChan chan *link, max uint, first bool) error {
 	if max == 0 {
 		return nil
 	}
-	max -= 1
+	group := 2
+	if first {
+		group = 1
+		first = !first
+	}
+	if max == 1 {
+		//the last layer
+		group = 3
+	}
+	max--
+	idChan <- &idGroup{
+		fmt.Sprintf("%v", txID2Hash(txID)),
+		group}
 	prevs, err := findPrev2(txID)
 	if err != nil {
 		return err
@@ -447,21 +514,26 @@ func findPrevs2(txID int, idChan chan *idGroup, linkChan chan *link, max uint) e
 	for _, pid := range prevs {
 		if pid != -1 {
 			idChan <- &idGroup{
-				fmt.Sprintf("%d", pid),
-				1}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				group}
 			linkChan <- &link{
-				fmt.Sprintf("%d", pid),
-				fmt.Sprintf("%d", txID),
-				0}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				fmt.Sprintf("%v", txID2Hash(txID)),
+				1}
 		}
 	}
 
+	fmt.Println("recursive find")
 	for _, pid := range prevs {
 		if pid != -1 {
-			err = findPrevs2(pid, idChan, linkChan, max)
+			// go func(pid int) error {
+			err := findPrevs2(pid, idChan, linkChan, max, first)
 			if err != nil {
 				return err
 			}
+			// return nil
+
+			// }(pid)
 
 		}
 	}
@@ -491,6 +563,11 @@ func findNexts2(txID int, idChan chan *idGroup, linkChan chan *link, max uint) e
 	if max == 0 {
 		return nil
 	}
+	group := 2
+	if max == 1 {
+		//the last layer
+		group = 3
+	}
 	max -= 1
 	nexts, err := findNext2(txID)
 	if err != nil {
@@ -499,20 +576,24 @@ func findNexts2(txID int, idChan chan *idGroup, linkChan chan *link, max uint) e
 	for _, pid := range nexts {
 		if pid != -1 {
 			idChan <- &idGroup{
-				fmt.Sprintf("%d", pid),
-				1}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				group}
 			linkChan <- &link{
-				fmt.Sprintf("%d", pid),
-				fmt.Sprintf("%d", txID),
-				0}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				fmt.Sprintf("%v", txID2Hash(txID)),
+				1}
 		}
 	}
+	fmt.Println("recursive find")
 	for _, pid := range nexts {
 		if pid != -1 {
+			// go func(pid int) error {
 			err = findNexts2(pid, idChan, linkChan, max)
 			if err != nil {
 				return err
 			}
+			// 	return nil
+			// }(pid)
 		}
 	}
 
@@ -540,7 +621,17 @@ func findPrev3(txID int, tag string) ([]int, error) {
 	return ids, nil
 }
 
-func findPrevs3(txID int, idChan chan *idGroup, linkChan chan *link, tag string) error {
+func findPrevs3(txID int, idChan chan *idGroup, linkChan chan *link, tag string, first bool) error {
+	group := 1
+	if !first {
+		group = 2
+	}
+	if first {
+		first = !first
+	}
+	idChan <- &idGroup{
+		fmt.Sprintf("%v", txID2Hash(txID)),
+		group}
 	prevs, err := findPrev3(txID, tag)
 	if err != nil {
 		return err
@@ -548,18 +639,18 @@ func findPrevs3(txID int, idChan chan *idGroup, linkChan chan *link, tag string)
 	for _, pid := range prevs {
 		if pid != -1 {
 			idChan <- &idGroup{
-				fmt.Sprintf("%d", pid),
-				1}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				group}
 			linkChan <- &link{
-				fmt.Sprintf("%d", pid),
-				fmt.Sprintf("%d", txID),
-				0}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				fmt.Sprintf("%v", txID2Hash(txID)),
+				1}
 		}
 	}
-
+	fmt.Println("recursive find")
 	for _, pid := range prevs {
 		if pid != -1 {
-			err = findPrevs3(pid, idChan, linkChan, tag)
+			err = findPrevs3(pid, idChan, linkChan, tag, first)
 			if err != nil {
 				return err
 			}
@@ -597,12 +688,12 @@ func findNexts3(txID int, idChan chan *idGroup, linkChan chan *link, tag string)
 	for _, pid := range nexts {
 		if pid != -1 {
 			idChan <- &idGroup{
-				fmt.Sprintf("%d", pid),
+				fmt.Sprintf("%v", txID2Hash(pid)),
 				1}
 			linkChan <- &link{
-				fmt.Sprintf("%d", pid),
-				fmt.Sprintf("%d", txID),
-				0}
+				fmt.Sprintf("%v", txID2Hash(pid)),
+				fmt.Sprintf("%v", txID2Hash(txID)),
+				1}
 		}
 	}
 	for _, pid := range nexts {

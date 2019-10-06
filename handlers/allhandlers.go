@@ -13,6 +13,7 @@ import (
 	"github.com/sunliang711/kyt/utils"
 )
 
+// HandlerObj TODO
 type HandlerObj struct {
 	H       http.HandlerFunc
 	Path    string
@@ -30,11 +31,17 @@ var allHandlers = []*HandlerObj{
 	&HandlerObj{addressBadTxGraph, "/address_badtx_graph", []string{"GET"}, ""},
 	&HandlerObj{blockTxList, "/block_txlist", []string{"GET"}, ""},
 	&HandlerObj{transactionIdentity, "/transaction_identity", []string{"GET"}, ""},
+	//download
 	&HandlerObj{transactionTxList, "/transaction_txlist", []string{"GET"}, ""},
 	&HandlerObj{transactionGraph, "/transaction_graph", []string{"GET"}, ""},
+	&HandlerObj{transactionTag, "/transaction_tag", []string{"GET"}, ""},
 	&HandlerObj{blockTransactionGraph, "/block_transaction_graph", []string{"GET"}, ""},
+	&HandlerObj{blockHeightByHash, "/block_height_by_hash", []string{"GET"}, ""},
+	&HandlerObj{blockHashByHeight, "/block_hash_by_height", []string{"GET"}, ""},
+	&HandlerObj{blockTags, "/block_tags", []string{"GET"}, ""},
 }
 
+// Router TODO
 func Router(enableCors bool) http.Handler {
 	rt := mux.NewRouter()
 
@@ -44,9 +51,8 @@ func Router(enableCors bool) http.Handler {
 
 	if enableCors {
 		return cors.Default().Handler(rt)
-	} else {
-		return rt
 	}
+	return rt
 }
 
 type resp struct {
