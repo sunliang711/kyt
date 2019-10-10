@@ -13,7 +13,6 @@ import (
 )
 
 type tx struct {
-	ID   int64  `json:"id"`
 	Tag  string `json:"tag"`
 	Hash string `json:"hash"`
 }
@@ -62,7 +61,7 @@ func blockTxList(w http.ResponseWriter, req *http.Request) {
 	//blockheight got
 	var txIDs []int64
 	//根据blockid，到txinfo表拿txID
-	rows, err = models.DB.Query("select txID from txinfo where blockID = ?", blockheight)
+	rows, err = models.DB.Query("select a.txID from txinfo a join txhash b on (a.txID=b.txID) where a.blockID = ? and b.risktag is not null", blockheight)
 	if err != nil {
 		utils.JsonResponse(resp{1, fmt.Sprintf("SQL error: select txID from txinfo where blockID = %v", blockheight), nil}, w)
 		return
@@ -72,21 +71,29 @@ func blockTxList(w http.ResponseWriter, req *http.Request) {
 		txIDs = append(txIDs, txID)
 	}
 	rows.Close()
+	var txs []tx
 	log.Printf("txIDs: %v\n", txIDs)
+	if len(txIDs) == 0 {
+		w.Header().Set("Content-Disposition", "attachment; filename=txList.txt")
+		w.Header().Set("Content-Type", req.Header.Get("Content-Type"))
+		w.Header().Set("Content-Length", req.Header.Get("Content-Length"))
+
+		json.NewEncoder(w).Encode(fmt.Sprintf("No suspicious transaction detected in block height: %d", blockheight))
+		return
+	}
 	params := []interface{}{}
 	for _, v := range txIDs {
 		params = append(params, v)
 	}
-	rows, err = models.DB.Query("select txID,txhash,risktag from txhash where txID in "+utils.MakeQuestion(len(txIDs)), params...)
+	rows, err = models.DB.Query("select txhash,risktag from txhash where txID in "+utils.MakeQuestion(len(txIDs)), params...)
 	if err != nil {
 		utils.JsonResponse(resp{1, fmt.Sprintf("SQL error: select txID,risktag from txhash where txID in %v", txIDs), nil}, w)
 		return
 	}
-	var txs []tx
 	var hash string
 	for rows.Next() {
-		rows.Scan(&txID, &hash, &tag)
-		txs = append(txs, tx{txID, tag, hash})
+		rows.Scan(&hash, &tag)
+		txs = append(txs, tx{tag, hash})
 	}
 	rows.Close()
 
@@ -160,7 +167,7 @@ func blockTransactionGraph(w http.ResponseWriter, req *http.Request) {
 	// 	allLinks []addressLink
 	// )
 
-	ret, err := TxsGraph(txIDs, false)
+	ret, err := TxsGraph(txIDs, -2)
 	if err != nil {
 		utils.JsonResponse(resp{1, "error", err}, w)
 		return
@@ -194,7 +201,7 @@ func blockTransactionGraph(w http.ResponseWriter, req *http.Request) {
 // 2019/09/24 19:03:57
 type addressNode struct {
 	ID          int    `json:"id"`          //addrID
-	User        int    `json:"user"`        //userID
+	User        int    `json:"group"`       //userID
 	Description string `json:"description"` //addrHash
 }
 
@@ -246,7 +253,7 @@ type nodesLinks struct {
 
 // TxsGraph TODO
 // 2019/09/25 15:40:28
-func TxsGraph(txIDs []int, event bool) (*nodesLinks, error) {
+func TxsGraph(txIDs []int, paraAddrID int) (*nodesLinks, error) {
 	fmt.Printf("len txIDs: %v\n", txIDs)
 	if len(txIDs) == 0 {
 		return &nodesLinks{}, nil
@@ -336,24 +343,25 @@ func TxsGraph(txIDs []int, event bool) (*nodesLinks, error) {
 			if !exist {
 				uniqueNode[addrID] = true
 
-				if event {
-					fmt.Printf("EVENT..........\n")
-					sql = "select count(*) from eventrecord where addrID = ?"
-					rows, _ := models.DB.Query(sql, addrID)
-					var count int
-					if rows.Next() {
-						rows.Scan(&count)
-						fmt.Printf("addrID: %v count: %v\n", addrID, count)
-					}
-					rows.Close()
-					if count > 0 {
-						fmt.Printf("add addrID: %v\n", addrID)
-						srcNodes = append(srcNodes, addressNode{addrID, addrIDMap[addrID].userID, addrIDMap[addrID].address})
-					}
+				// if event {
+				// 	// fmt.Printf("EVENT..........\n")
+				// 	// sql = "select count(*) from eventrecord where addrID = ?"
+				// 	// rows, _ := models.DB.Query(sql, addrID)
+				// 	// var count int
+				// 	// if rows.Next() {
+				// 	// 	rows.Scan(&count)
+				// 	// 	fmt.Printf("addrID: %v count: %v\n", addrID, count)
+				// 	// }
+				// 	// rows.Close()
+				// 	// if count > 0 {
+				// 	fmt.Printf("add addrID: %v\n", addrID)
+				// 	srcNodes = append(srcNodes, addressNode{addrID, addrIDMap[addrID].userID, addrIDMap[addrID].address})
+				// 	// }
 
-				} else {
-					srcNodes = append(srcNodes, addressNode{addrID, addrIDMap[addrID].userID, addrIDMap[addrID].address})
-				}
+				// } else {
+				// 	srcNodes = append(srcNodes, addressNode{addrID, addrIDMap[addrID].userID, addrIDMap[addrID].address})
+				// }
+				srcNodes = append(srcNodes, addressNode{addrID, addrIDMap[addrID].userID, addrIDMap[addrID].address})
 				//
 			}
 		}
@@ -453,6 +461,8 @@ func TxsGraph(txIDs []int, event bool) (*nodesLinks, error) {
 
 	//make link
 	var links []addressLink
+	uniqueLinks := make(map[string]bool)
+	usefulNodes := make(map[int]bool)
 	for _, v := range txIDMap {
 		for _, s := range v.Src {
 			for _, d := range v.Dest {
@@ -461,18 +471,44 @@ func TxsGraph(txIDs []int, event bool) (*nodesLinks, error) {
 				if s == -1 || d == -1 {
 					continue
 				}
+				if s == d {
+					continue
+				}
+
+				if paraAddrID != -2 && paraAddrID != s && paraAddrID != d {
+					continue
+				}
+
+				_, exist := uniqueLinks[fmt.Sprintf("%v%v", s, d)]
+				if !exist {
+					links = append(links, addressLink{s, d})
+					uniqueLinks[fmt.Sprintf("%v%v", s, d)] = true
+					usefulNodes[s] = true
+					usefulNodes[d] = true
+				}
 				// if addrIDMap[s] == nil || addrIDMap[d] == nil {
 				// 	continue
 				// }
 				// links = append(links, addressLink{fmt.Sprintf("%d", s), fmt.Sprintf("%d", d)})
-				links = append(links, addressLink{s, d})
 			}
 		}
 
 	}
+	var retSrcNodes []addressNode
+	var retDestNodes []addressNode
+	for _, n := range srcNodes {
+		if _, exist := usefulNodes[n.ID]; exist {
+			retSrcNodes = append(retSrcNodes, n)
+		}
+	}
+	for _, n := range destNodes {
+		if _, exist := usefulNodes[n.ID]; exist {
+			retDestNodes = append(retDestNodes, n)
+		}
+	}
 
 	ret := &nodesLinks{
-		append(srcNodes, destNodes...),
+		append(retSrcNodes, retDestNodes...),
 		links,
 	}
 	return ret, nil

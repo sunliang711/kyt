@@ -124,7 +124,14 @@ func transactionIdentity(w http.ResponseWriter, req *http.Request) {
 
 	sender = utils.UniqStringSlice(sender)
 	receiver = utils.UniqStringSlice(receiver)
+	if len(sender) == 0 {
+		sender = append(sender, "Unknown")
+	}
+	if len(receiver) == 0 {
+		receiver = append(receiver, "Unknown")
+	}
 	txSR := txSenderReceiver{sender, receiver}
+	log.Printf("txSR: %+v", txSR)
 
 	utils.JsonResponse(resp{0, "OK", &txSR}, w)
 
@@ -160,6 +167,7 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 		txID     int
 		eventtag string
 		hash     string
+		risktag  string
 	)
 	if rows.Next() {
 		rows.Scan(&txID, &eventtag)
@@ -167,7 +175,7 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 		log.Printf("get txID: %v", txID)
 		if len(eventtag) > 0 {
 			log.Printf("eventtag: %v", eventtag)
-			sql = "select txhash,eventtag from txhash where eventtag = ?"
+			sql = "select txhash,eventtag,risktag from txhash where eventtag = ?"
 			rows, err = models.DB.Query(sql, eventtag)
 			if err != nil {
 				utils.JsonResponse(resp{1, "internal db error", nil}, w)
@@ -175,11 +183,11 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 
-			var hashTags []*hashTag
+			var hashTags []*hashTag2
 			for rows.Next() {
-				rows.Scan(&hash, &eventtag)
+				rows.Scan(&hash, &eventtag, &risktag)
 				log.Printf("hash: %v,eventtag: %v", hash, eventtag)
-				hashTags = append(hashTags, &hashTag{hash, eventtag})
+				hashTags = append(hashTags, &hashTag2{hash, eventtag, risktag})
 			}
 			rows.Close()
 			log.Printf("eventtag: %v", eventtag)
@@ -205,7 +213,7 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 				utils.JsonResponse(resp{1, "find prevs error", nil}, w)
 				return
 			}
-			err = findNexts(txID, idChan, 3)
+			err = findNexts(txID, idChan, 5)
 			if err != nil {
 				utils.JsonResponse(resp{1, "find nexts error", nil}, w)
 				return
@@ -216,13 +224,13 @@ func transactionTxList(w http.ResponseWriter, req *http.Request) {
 				utils.JsonResponse(resp{1, fmt.Sprintf("no data  with txhash: %v", txhash), nil}, w)
 				return
 			}
-			sql = "select txhash,eventtag from txhash where txID in " + utils.MakeQuestion(len(ids))
+			sql = "select txhash,eventtag,risktag from txhash where txID in " + utils.MakeQuestion(len(ids))
 			rows, err = models.DB.Query(sql, ids...)
-			var hashtags []*hashTag
+			var hashtags []*hashTag2
 			for rows.Next() {
-				rows.Scan(&hash, eventtag)
+				rows.Scan(&hash, &eventtag, &risktag)
 				log.Printf("get hash:%v,eventtag:%v.", hash, eventtag)
-				hashtags = append(hashtags, &hashTag{hash, eventtag})
+				hashtags = append(hashtags, &hashTag2{hash, eventtag, risktag})
 			}
 			rows.Close()
 			log.Printf("eventtag is empty")
@@ -409,37 +417,51 @@ func transactionGraph(w http.ResponseWriter, req *http.Request) {
 		}
 		close(linkChanDone)
 	}()
-	if eventtag == "" {
-		//前后追溯3层
-		first := true
-		err = findPrevs2(txID, hash, idChan, linkChan, 3, first)
-		if err != nil {
-			utils.JsonResponse(resp{1, "find prevs error", nil}, w)
-			log.Printf("find prevs error: %v", err)
-			return
-		}
-		err = findNexts2(txID, hash, idChan, linkChan, 3)
-		if err != nil {
-			utils.JsonResponse(resp{1, "find nexts error", nil}, w)
-			log.Printf("find nexts error: %v", err)
-			return
-		}
-
-	} else {
-		//返回该事件所有
-		//使用eventtag查询回溯路径图
-		first := true
-		err = findPrevs3(txID, hash, idChan, linkChan, eventtag, first)
-		if err != nil {
-			utils.JsonResponse(resp{1, "find preves with tag error", nil}, w)
-			return
-		}
-		err = findNexts3(txID, hash, idChan, linkChan, eventtag, first)
-		if err != nil {
-			utils.JsonResponse(resp{1, "find nexts error", nil}, w)
-			return
-		}
+	//前后追溯3层
+	first := true
+	err = findPrevs2(txID, hash, idChan, linkChan, 3, first)
+	if err != nil {
+		utils.JsonResponse(resp{1, "find prevs error", nil}, w)
+		log.Printf("find prevs error: %v", err)
+		return
 	}
+	err = findNexts2(txID, hash, idChan, linkChan, 3)
+	if err != nil {
+		utils.JsonResponse(resp{1, "find nexts error", nil}, w)
+		log.Printf("find nexts error: %v", err)
+		return
+	}
+	// if eventtag == "" {
+	// 	//前后追溯3层
+	// 	first := true
+	// 	err = findPrevs2(txID, hash, idChan, linkChan, 3, first)
+	// 	if err != nil {
+	// 		utils.JsonResponse(resp{1, "find prevs error", nil}, w)
+	// 		log.Printf("find prevs error: %v", err)
+	// 		return
+	// 	}
+	// 	err = findNexts2(txID, hash, idChan, linkChan, 3)
+	// 	if err != nil {
+	// 		utils.JsonResponse(resp{1, "find nexts error", nil}, w)
+	// 		log.Printf("find nexts error: %v", err)
+	// 		return
+	// 	}
+
+	// } else {
+	// 	//返回该事件所有
+	// 	//使用eventtag查询回溯路径图
+	// 	first := true
+	// 	err = findPrevs3(txID, hash, idChan, linkChan, eventtag, first)
+	// 	if err != nil {
+	// 		utils.JsonResponse(resp{1, "find preves with tag error", nil}, w)
+	// 		return
+	// 	}
+	// 	err = findNexts3(txID, hash, idChan, linkChan, eventtag, first)
+	// 	if err != nil {
+	// 		utils.JsonResponse(resp{1, "find nexts error", nil}, w)
+	// 		return
+	// 	}
+	// }
 	close(idChan)
 	close(linkChan)
 

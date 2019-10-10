@@ -464,6 +464,20 @@ func addressSourceType(w http.ResponseWriter, req *http.Request) {
 	sourceMap := make(map[string]float64)
 	var total int
 	var txID int
+	if !rows2.Next() {
+		sourceObj := struct {
+			Hack       float64 `json:"hack"`
+			Laundry    float64 `json:"laundry"`
+			Spam       float64 `json:"spam"`
+			Ransomware float64 `json:"ransomware"`
+			Fraud      float64 `json:"fraud"`
+			Gamble     float64 `json:"gamble"`
+			Unknown    float64 `json:"unknown"`
+		}{0, 0, 0, 0, 0, 0, 1}
+		utils.JsonResponse(resp{0, "OK", sourceObj}, w)
+		return
+	}
+
 	for rows2.Next() {
 		var risktag string
 		rows2.Scan(&value, &risktag, &txID)
@@ -550,6 +564,12 @@ func addressRiskLevel(w http.ResponseWriter, req *http.Request) {
 type hashTag struct {
 	Hash string `json:"hash"`
 	Tag  string `json:"tag"`
+}
+
+type hashTag2 struct {
+	Hash    string `json:"hash"`
+	Tag     string `json:"tag"`
+	Risktag string `json:"risktag"`
 }
 
 func addressBadTxList(w http.ResponseWriter, req *http.Request) {
@@ -645,9 +665,19 @@ func addressBadTxGraph(w http.ResponseWriter, req *http.Request) {
 	var txID int
 	for rows.Next() {
 		rows.Scan(&txID)
-		fmt.Printf("find txID: %v,addrID: %v\n", txID, addrID)
 		txChan <- txID
 	}
+	// sql = "select distinct a.txID from txhash a join txout b on (a.txID=b.txID) where b.addrID=?  and a.risktag is not null;"
+	// rows, err = models.DB.Query(sql, addrID)
+	// if err != nil {
+	// 	utils.JsonResponse(resp{1, "Query first level(txout) tx error", nil}, w)
+	// 	return
+	// }
+	// for rows.Next() {
+	// 	rows.Scan(&txID)
+	// 	txChan <- txID
+	// }
+
 	findNextTxsEvent(addrID, txChan)
 	findPrevTxsEvent(addrID, txChan)
 
@@ -688,7 +718,7 @@ func addressBadTxGraph(w http.ResponseWriter, req *http.Request) {
 	// 	allNodes []addressNode
 	// 	allLinks []addressLink
 	// )
-	ret, err := TxsGraph(txIDs, true)
+	ret, err := TxsGraph(txIDs, addrID)
 	if err != nil {
 		utils.JsonResponse(resp{1, "error", err}, w)
 		return
