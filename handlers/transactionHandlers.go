@@ -398,9 +398,14 @@ func transactionGraph(w http.ResponseWriter, req *http.Request) {
 		}
 		close(idChanDone)
 	}()
+	uniqueLink := make(map[string]bool)
 	go func() {
 		for l := range linkChan {
-			links = append(links, l)
+			_, exist := uniqueLink[l.Source+l.Target]
+			if !exist {
+				uniqueLink[l.Source+l.Target] = true
+				links = append(links, l)
+			}
 		}
 		close(linkChanDone)
 	}()
@@ -429,7 +434,7 @@ func transactionGraph(w http.ResponseWriter, req *http.Request) {
 			utils.JsonResponse(resp{1, "find preves with tag error", nil}, w)
 			return
 		}
-		err = findNexts3(txID, hash, idChan, linkChan, eventtag)
+		err = findNexts3(txID, hash, idChan, linkChan, eventtag, first)
 		if err != nil {
 			utils.JsonResponse(resp{1, "find nexts error", nil}, w)
 			return
@@ -451,7 +456,8 @@ func transactionGraph(w http.ResponseWriter, req *http.Request) {
 
 }
 func findPrev2(txID int) ([]int, []string, error) {
-	sql := "select a.prev_txID,b.txhash from txin a join txhash b on (a.prev_txID=b.txID) where a.txID = ?"
+	// sql := "select a.prev_txID,b.txhash from txin a join txhash b on (a.prev_txID=b.txID) where a.txID = ?"
+	sql := "select c.prev_txID,b.txhash from txhash b join (select a.prev_txID from txin a where a.txID = ?) c on (b.txID=c.prev_txID)"
 	rows, err := models.DB.Query(sql, txID)
 	if err != nil {
 		return nil, nil, err
@@ -497,18 +503,27 @@ func txID2Hash(txID int) string {
 	log.Printf("txID2Hash: %v->%v", txID, hash)
 	return hash
 }
+
+const (
+	CUR     = 1
+	PREV    = 2
+	PREVEND = 3
+	NEXT    = 4
+	NEXTEND = 5
+)
+
 func findPrevs2(txID int, hash string, idChan chan *idGroup, linkChan chan *link, max uint, first bool) error {
 	if max == 0 {
 		return nil
 	}
-	group := 2
+	group := PREV
 	if first {
-		group = 1
+		group = CUR
 		first = !first
 	}
 	if max == 1 {
 		//the last layer
-		group = 3
+		// group = PREVEND
 	}
 	max--
 	idChan <- &idGroup{
@@ -517,6 +532,9 @@ func findPrevs2(txID int, hash string, idChan chan *idGroup, linkChan chan *link
 	prevIDs, prevHashes, err := findPrev2(txID)
 	if err != nil {
 		return err
+	}
+	if group == CUR {
+		group = PREV
 	}
 	for index, pid := range prevIDs {
 		if pid != -1 {
@@ -568,10 +586,10 @@ func findNexts2(txID int, hash string, idChan chan *idGroup, linkChan chan *link
 	if max == 0 {
 		return nil
 	}
-	group := 2
+	group := NEXT
 	if max == 1 {
 		//the last layer
-		group = 3
+		// group = NEXTEND
 	}
 	max--
 	nextIDs, nextHashes, err := findNext2(txID)
@@ -607,7 +625,8 @@ func findNexts2(txID int, hash string, idChan chan *idGroup, linkChan chan *link
 
 func findPrev3(txID int, tag string) ([]int, []string, error) {
 	// sql := "select prev_txID from txin where txID = ?"
-	sql := "select a.prev_txID,b.txhash from txin a join txhash b on (a.txID=b.txID) where a.txID = ? and b.risktag is not null"
+	// sql := "select a.prev_txID,b.txhash from txin a join txhash b on (a.txID=b.txID) where a.txID = ? and b.risktag is not null"
+	sql := "select c.prev_txID,d.txhash from txhash d join(select a.prev_txID from txin a join txhash b on(a.txID=b.txID) where a.txID=? and b.risktag is not null)c on (c.prev_txID=d.txID);"
 	rows, err := models.DB.Query(sql, txID)
 	if err != nil {
 		log.Printf("findPrev3 error: %v", err)
@@ -631,31 +650,37 @@ func findPrev3(txID int, tag string) ([]int, []string, error) {
 }
 
 func findPrevs3(txID int, hash string, idChan chan *idGroup, linkChan chan *link, tag string, first bool) error {
-	group := 1
+	group := CUR
 	if !first {
-		group = 2
+		group = PREV
 	}
 	if first {
 		first = !first
 	}
-	idChan <- &idGroup{
-		fmt.Sprintf("%v", hash),
-		group}
+	log.Printf("prev::node hash:%v with group: %d", hash, group)
 	prevIDs, prevHashes, err := findPrev3(txID, tag)
 	if err != nil {
 		return err
 	}
+	hasPrev := false
 	for index, pid := range prevIDs {
 		if pid != -1 {
-			idChan <- &idGroup{
-				fmt.Sprintf("%v", prevHashes[index]),
-				group}
+			hasPrev = true
+			// idChan <- &idGroup{
+			// 	fmt.Sprintf("%v", prevHashes[index]),
+			// 	group}
 			linkChan <- &link{
 				fmt.Sprintf("%v", prevHashes[index]),
 				fmt.Sprintf("%v", hash),
 				1}
 		}
 	}
+	if !hasPrev {
+		// group = PREVEND
+	}
+	idChan <- &idGroup{
+		fmt.Sprintf("%v", hash),
+		group}
 	fmt.Println("recursive find")
 	for index, pid := range prevIDs {
 		if pid != -1 {
@@ -693,16 +718,24 @@ func findNext3(txID int, tag string) ([]int, []string, error) {
 	}
 	return ids, hashes, nil
 }
-func findNexts3(txID int, hash string, idChan chan *idGroup, linkChan chan *link, tag string) error {
+func findNexts3(txID int, hash string, idChan chan *idGroup, linkChan chan *link, tag string, first bool) error {
+	group := NEXT
+	// if !first {
+	// 	group = NEXTEND
+	// }
+	if first {
+		first = !first
+	}
 	nextIDs, nextHashes, err := findNext3(txID, tag)
 	if err != nil {
 		return err
 	}
 	for index, pid := range nextIDs {
 		if pid != -1 {
+			log.Printf("next::node hash: %v with group: %d", nextHashes[index], group)
 			idChan <- &idGroup{
 				fmt.Sprintf("%v", nextHashes[index]),
-				1}
+				group}
 			linkChan <- &link{
 				fmt.Sprintf("%v", nextHashes[index]),
 				fmt.Sprintf("%v", hash),
@@ -711,7 +744,7 @@ func findNexts3(txID int, hash string, idChan chan *idGroup, linkChan chan *link
 	}
 	for index, pid := range nextIDs {
 		if pid != -1 {
-			err = findNexts3(pid, nextHashes[index], idChan, linkChan, tag)
+			err = findNexts3(pid, nextHashes[index], idChan, linkChan, tag, first)
 			if err != nil {
 				return err
 			}
