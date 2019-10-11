@@ -464,7 +464,18 @@ func addressSourceType(w http.ResponseWriter, req *http.Request) {
 	sourceMap := make(map[string]float64)
 	var total int
 	var txID int
-	if !rows2.Next() {
+	hasData := false
+
+	for rows2.Next() {
+		hasData = true
+		var risktag string
+		rows2.Scan(&value, &risktag, &txID)
+		log.Printf("risktag:%v,value:%v,txID: %v", risktag, value, txID)
+		total += value
+		sourceMap[risktag] += float64(value)
+	}
+
+	if !hasData {
 		sourceObj := struct {
 			Hack       float64 `json:"hack"`
 			Laundry    float64 `json:"laundry"`
@@ -476,14 +487,6 @@ func addressSourceType(w http.ResponseWriter, req *http.Request) {
 		}{0, 0, 0, 0, 0, 0, 1}
 		utils.JsonResponse(resp{0, "OK", sourceObj}, w)
 		return
-	}
-
-	for rows2.Next() {
-		var risktag string
-		rows2.Scan(&value, &risktag, &txID)
-		// log.Printf("risktag:%v,value:%v,txID: %v", risktag, value, txID)
-		total += value
-		sourceMap[risktag] += float64(value)
 	}
 	for k, v := range sourceMap {
 		if total == 0 {
