@@ -596,17 +596,26 @@ func addressBadTxList(w http.ResponseWriter, req *http.Request) {
 		hashTags []*hashTag
 	)
 
+	uniqueHashTags := make(map[string]bool)
 	rows2, err := models.DB.Query(sql2, address)
 	for rows2.Next() {
 		rows2.Scan(&txhash, &risktag)
-		log.Printf("txhash: %v,risktag: %v", txhash, risktag)
-		hashTags = append(hashTags, &hashTag{txhash, risktag})
+		// log.Printf("txhash: %v,risktag: %v", txhash, risktag)
+		hashPlusTag := txhash + risktag
+		if _, exist := uniqueHashTags[hashPlusTag]; !exist {
+			uniqueHashTags[hashPlusTag] = true
+			hashTags = append(hashTags, &hashTag{txhash, risktag})
+		}
 	}
 
 	for rows.Next() {
 		rows.Scan(&txhash, &risktag)
-		log.Printf("txhash: %v,risktag: %v", txhash, risktag)
-		hashTags = append(hashTags, &hashTag{txhash, risktag})
+		// log.Printf("txhash: %v,risktag: %v", txhash, risktag)
+		hashPlusTag := txhash + risktag
+		if _, exist := uniqueHashTags[hashPlusTag]; !exist {
+			uniqueHashTags[hashPlusTag] = true
+			hashTags = append(hashTags, &hashTag{txhash, risktag})
+		}
 	}
 	if err != nil {
 		utils.JsonResponse(resp{1, "internal db error", nil}, w)
